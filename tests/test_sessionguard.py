@@ -99,6 +99,41 @@ def test_secrets_redacted_in_task_text():
     assert "abcdefgh12345678" not in cp["task"]
 
 
+def test_briefing_only_within_same_origin():
+    init.on_pre_llm_call(is_first_turn=True, user_message="Alice private job", session_id="sess-tg-src", platform="telegram", sender_id="alice")
+    init.on_post_tool_call("write_file", {"path": "/tmp/alice.txt", "content": "x"}, session_id="sess-tg-src", status="success")
+    bob = init.on_pre_llm_call(is_first_turn=True, user_message="hi", session_id="sess-tg-bob", platform="telegram", sender_id="bob")
+    assert bob is not None and "recovery briefing" not in bob["context"].lower()
+    assert "Alice private job" not in bob["context"]
+    alice = init.on_pre_llm_call(is_first_turn=True, user_message="hi again", session_id="sess-tg-alice", platform="telegram", sender_id="alice")
+    assert alice is not None and "recovery briefing" in alice["context"].lower()
+    assert "Alice private job" in alice["context"]
+
+
+def test_cron_and_subagent_sessions_are_skipped():
+    assert init.on_pre_llm_call(is_first_turn=True, user_message="cron job", session_id="sess-cron", platform="cron") is None
+    assert init.on_pre_llm_call(is_first_turn=True, user_message="sub job", session_id="sess-sub", platform="cli", parent_session_id="sess-parent") is None
+    ids = [r["session_id"] for r in store.all_checkpoints()]
+    assert "sess-cron" not in ids
+    assert "sess-sub" not in ids
+
+
+def test_checkpoint_tool_ignores_params_session_id():
+    result = json.loads(init.session_checkpoint_tool({"note": "forged", "session_id": "sess-victim", "status": "done"}))
+    assert result["success"] is False
+
+
+def test_path_extraction_bounded_and_linear():
+    import time
+
+    late = "x" * 5000 + " /tmp/late/file.txt"
+    assert store.touched_files("terminal", {"command": late}) == []
+    dotted = "/" + "a." * 20_000  # ~40 KB dotted run
+    start = time.perf_counter()
+    store.touched_files("terminal", {"command": dotted})
+    assert time.perf_counter() - start < 1.0
+
+
 def test_interrupted_session_stays_open():
     init.on_pre_llm_call(is_first_turn=True, user_message="Fragile job", session_id="sess-i", platform="cli")
     init.on_post_tool_call("terminal", {"command": "run"}, session_id="sess-i", status="success")

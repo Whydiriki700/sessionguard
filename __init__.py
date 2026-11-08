@@ -21,7 +21,9 @@ from tool evidence, not from prose:
     turn's outcome on the checkpoint. A checkpoint closes only when
     the agent marks its task done via `session_checkpoint`; every
     other session's checkpoint stays open, and the most recent open
-    one is what the next session gets briefed about.
+    one from the same origin (same platform and sender) is what the
+    next session gets briefed about. Subagent and cron sessions
+    neither record checkpoints nor receive briefings.
 
 Everything is local under <HERMES_HOME>/sessionguard/ (state.json plus
 an append-only events.jsonl audit trail). No network, no LLM. Storage
@@ -128,8 +130,14 @@ def on_pre_llm_call(
 ) -> Optional[Dict[str, str]]:
     if not _enabled() or not session_id:
         return None
+    sender_id = str(kwargs.get("sender_id") or "")
+    if kwargs.get("parent_session_id") or (platform or "") == "cron":
+        # Subagent and cron sessions neither record checkpoints nor
+        # receive briefings: their work is not a user's open thread, and
+        # on multi-user gateway profiles it must never leak across users.
+        return None
     try:
-        store.record_turn(session_id, user_message or "", platform or "")
+        store.record_turn(session_id, user_message or "", platform or "", sender_id)
     except Exception:
         logger.debug("SessionGuard: record_turn failed", exc_info=True)
         return None
@@ -137,7 +145,9 @@ def on_pre_llm_call(
         return None
     parts = [_STANDING_BRIEF]
     try:
-        stale = store.latest_open_checkpoint(exclude_session=session_id)
+        stale = store.latest_open_checkpoint(
+            exclude_session=session_id, platform=platform or "", sender_id=sender_id
+        )
         if stale is not None and not stale.get("briefed"):
             parts.append(_recovery_brief(stale))
             store.mark_briefed(str(stale.get("session_id")))
@@ -199,7 +209,10 @@ def session_checkpoint_tool(params: Dict[str, Any] | None = None, **kwargs: Any)
     params = params or {}
     note = str(params.get("note") or "")
     status = str(params.get("status") or "working").lower()
-    session_id = str(kwargs.get("session_id") or params.get("session_id") or "")
+    # Only the real session_id kwarg Hermes passes: a session_id inside
+    # the model-supplied params must never let the model write or close
+    # another session's checkpoint.
+    session_id = str(kwargs.get("session_id") or "")
     if not session_id:
         return json.dumps({"success": False, "error": "no session_id available"})
     checkpoint = store.add_note(session_id, note, close=(status == "done"))

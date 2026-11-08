@@ -1,6 +1,6 @@
 name: sessionguard
-version: 0.1.0
-description: "Work survives the session. SessionGuard keeps a local work-state checkpoint for every session, built from tool evidence (current task, files touched, recent tool calls and outcomes, failures, the agent's own progress notes). A checkpoint closes when the agent marks its task done; otherwise it stays open, and the next session's first turn is briefed from the most recent open checkpoint, so work interrupted by a dead process, a dropped gateway, or a compaction resumes from evidence instead of being re-derived from a lossy transcript or redone blindly."
+version: 0.1.1
+description: "Work survives the session. SessionGuard keeps a local work-state checkpoint for every session, built from tool evidence (current task, files touched, recent tool calls and outcomes, failures, the agent's own progress notes). A checkpoint closes when the agent marks its task done; otherwise it stays open, and the next session from the same origin (same platform and sender) is briefed from the most recent open checkpoint, so work interrupted by a dead process, a dropped gateway, or a compaction resumes from evidence instead of being re-derived from a lossy transcript or redone blindly. Subagent and cron sessions neither record checkpoints nor receive briefings."
 author: "Riki Wahyudi"
 requires_hermes: ">=0.22.0"
 provides_tools:

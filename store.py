@@ -94,6 +94,7 @@ def summarize_args(tool_name: str, args: Any) -> str:
 
 
 _PATH_TOKEN = re.compile(r"(?<![\w/])(/(?:[\w.\-]+/)*[\w.\-]+\.[A-Za-z0-9]{1,6})\b")
+_COMMAND_SCAN_LIMIT = 4096
 
 
 def touched_files(tool_name: str, args: Any) -> List[str]:
@@ -109,7 +110,9 @@ def touched_files(tool_name: str, args: Any) -> List[str]:
     if tool_name in ("terminal", "shell", "bash", "exec"):
         command = args.get("command")
         if isinstance(command, str):
-            for match in _PATH_TOKEN.finditer(command):
+            # Scan only a bounded prefix: _PATH_TOKEN backtracks badly on
+            # long dotted runs, and this runs under the store lock.
+            for match in _PATH_TOKEN.finditer(command[:_COMMAND_SCAN_LIMIT]):
                 found.append(match.group(1)[:200])
     return found
 
@@ -123,6 +126,8 @@ def get_or_create(state: Dict[str, Any], session_id: str) -> Dict[str, Any]:
             "first_seen": time.time(),
             "last_seen": time.time(),
             "platform": "",
+            "sender_id": "",
+            "origin_recorded": False,
             "task": "",
             "turns": 0,
             "tool_events": [],
@@ -141,7 +146,9 @@ def get_or_create(state: Dict[str, Any], session_id: str) -> Dict[str, Any]:
     return checkpoint
 
 
-def record_turn(session_id: str, task_text: str, platform: str = "") -> Dict[str, Any]:
+def record_turn(
+    session_id: str, task_text: str, platform: str = "", sender_id: str = ""
+) -> Dict[str, Any]:
     with _LOCK:
         state = load_state()
         checkpoint = get_or_create(state, session_id)
@@ -149,8 +156,12 @@ def record_turn(session_id: str, task_text: str, platform: str = "") -> Dict[str
         checkpoint["turns"] = int(checkpoint.get("turns") or 0) + 1
         if task_text:
             checkpoint["task"] = clean_text(task_text, 300)
-        if platform:
-            checkpoint["platform"] = platform
+        # The origin stamp is what later authorizes a recovery briefing:
+        # only a session with the same platform and sender may be briefed
+        # from this checkpoint.
+        checkpoint["platform"] = platform or ""
+        checkpoint["sender_id"] = sender_id or ""
+        checkpoint["origin_recorded"] = True
         save_state(state)
         return checkpoint
 
@@ -216,13 +227,24 @@ def record_turn_outcome(session_id: str, outcome: str) -> None:
         save_state(state)
 
 
-def latest_open_checkpoint(exclude_session: str) -> Optional[Dict[str, Any]]:
+def latest_open_checkpoint(
+    exclude_session: str, platform: str = "", sender_id: str = ""
+) -> Optional[Dict[str, Any]]:
+    """Newest open checkpoint from the SAME origin (platform + sender).
+
+    Checkpoints whose origin was never stamped by record_turn (for
+    example ones created only by tool calls in skipped subagent or cron
+    sessions) are never briefed from.
+    """
     state = load_state()
     candidates = [
         c
         for c in state.get("sessions", {}).values()
         if not c.get("closed")
         and c.get("session_id") != exclude_session
+        and c.get("origin_recorded")
+        and (c.get("platform") or "") == (platform or "")
+        and (c.get("sender_id") or "") == (sender_id or "")
         and (c.get("tool_events") or c.get("notes"))
     ]
     if not candidates:
