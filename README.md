@@ -1,3 +1,5 @@
+![sessionguard](assets/preview.png)
+
 # SessionGuard
 
 **Work survives the session.**
